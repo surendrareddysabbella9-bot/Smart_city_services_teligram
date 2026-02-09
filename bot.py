@@ -8,7 +8,6 @@ such as Electricians, Plumbers, and Construction Workers.
 import logging
 import os
 import sys
-from enum import Enum, auto
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -44,10 +43,8 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
-# Conversation states
-class States(Enum):
-    SELECTING_SERVICE = auto()
-    ENTERING_LOCATION = auto()
+# Conversation states (using simple integers for reliability)
+SELECTING_SERVICE, ENTERING_LOCATION = range(2)
 
 
 # Available services
@@ -71,7 +68,7 @@ def get_location_keyboard() -> ReplyKeyboardMarkup:
     """Create a keyboard with location sharing button."""
     keyboard = [
         [KeyboardButton("📍 Share My Location", request_location=True)],
-        [KeyboardButton("❌ Cancel")],
+        [KeyboardButton("✏️ Type Location Manually")],
     ]
     return ReplyKeyboardMarkup(
         keyboard,
@@ -80,7 +77,7 @@ def get_location_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> States:
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handle the /start command - display welcome message and services."""
     user = update.effective_user
     logger.info(f"User {user.id} ({user.first_name}) started the bot")
@@ -101,10 +98,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> States:
         reply_markup=get_service_keyboard(),
     )
 
-    return States.SELECTING_SERVICE
+    return SELECTING_SERVICE
 
 
-async def service_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> States:
+async def service_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handle service selection from inline keyboard."""
     query = update.callback_query
     await query.answer()
@@ -126,12 +123,13 @@ async def service_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # Send a new message with the location button
     await query.message.reply_text(
         "Tap the button below to share your location:\n\n"
-        "_Your location will only be used to find nearby service workers._",
+        "_Your location will only be used to find nearby service workers._\n\n"
+        "Or tap 'Type Location Manually' to enter your address.",
         parse_mode="Markdown",
         reply_markup=get_location_keyboard(),
     )
 
-    return States.ENTERING_LOCATION
+    return ENTERING_LOCATION
 
 
 async def location_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -179,15 +177,13 @@ async def text_location_received(update: Update, context: ContextTypes.DEFAULT_T
     user = update.effective_user
     text = update.message.text.strip()
 
-    # Check if user clicked Cancel
-    if text == "❌ Cancel":
+    # Check if user clicked the manual button
+    if text == "✏️ Type Location Manually":
         await update.message.reply_text(
-            "❌ Request cancelled.\n\nUse /start to begin again.",
-            parse_mode="Markdown",
+            "📝 Please type your address or area name:",
             reply_markup=ReplyKeyboardRemove(),
         )
-        context.user_data.clear()
-        return ConversationHandler.END
+        return ENTERING_LOCATION
 
     service_name = context.user_data.get("selected_service", "the requested service")
 
@@ -277,10 +273,10 @@ def main() -> None:
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            States.SELECTING_SERVICE: [
+            SELECTING_SERVICE: [
                 CallbackQueryHandler(service_selected),
             ],
-            States.ENTERING_LOCATION: [
+            ENTERING_LOCATION: [
                 MessageHandler(filters.LOCATION, location_received),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, text_location_received),
             ],

@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
-# Conversation states (using simple integers for reliability)
+# Conversation states
 SELECTING_SERVICE, ENTERING_LOCATION = range(2)
 
 
@@ -82,6 +82,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
     logger.info(f"User {user.id} ({user.first_name}) started the bot")
 
+    # Clear any previous state
+    context.user_data.clear()
+
     welcome_message = (
         f"👋 Welcome to *Smart City Services*, {user.first_name}!\n\n"
         "We connect you with skilled service workers in your area.\n\n"
@@ -104,9 +107,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def service_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handle service selection from inline keyboard."""
     query = update.callback_query
+    
+    # Always answer the callback to remove loading state
     await query.answer()
 
     service_id = query.data
+    logger.info(f"Received callback data: {service_id}")
+    
     service_name = SERVICES.get(service_id, "Unknown Service")
 
     # Store the selected service in user data
@@ -114,11 +121,14 @@ async def service_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     logger.info(f"User {query.from_user.id} selected service: {service_name}")
 
-    await query.edit_message_text(
-        f"You selected: *{service_name}*\n\n"
-        "📍 Please share your location so we can find nearby workers.",
-        parse_mode="Markdown",
-    )
+    try:
+        await query.edit_message_text(
+            f"You selected: *{service_name}*\n\n"
+            "📍 Please share your location so we can find nearby workers.",
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        logger.error(f"Error editing message: {e}")
 
     # Send a new message with the location button
     await query.message.reply_text(
@@ -269,19 +279,24 @@ def main() -> None:
     # Create the Application
     application = Application.builder().token(token).build()
 
-    # Create conversation handler
+    # Create conversation handler with explicit patterns
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
             SELECTING_SERVICE: [
-                CallbackQueryHandler(service_selected),
+                # Match any of the service callback data
+                CallbackQueryHandler(service_selected, pattern="^(electrician|plumber|construction)$"),
             ],
             ENTERING_LOCATION: [
                 MessageHandler(filters.LOCATION, location_received),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, text_location_received),
             ],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            CommandHandler("start", start),  # Allow restart at any point
+        ],
+        per_message=False,
     )
 
     # Add handlers
@@ -290,7 +305,7 @@ def main() -> None:
 
     # Start the bot
     logger.info("Bot started successfully! Press Ctrl+C to stop.")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
 if __name__ == "__main__":

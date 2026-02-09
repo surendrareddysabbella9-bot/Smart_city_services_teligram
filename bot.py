@@ -12,7 +12,14 @@ from enum import Enum, auto
 from typing import Optional
 
 from dotenv import load_dotenv
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+    Update,
+)
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -40,7 +47,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 # Conversation states
 class States(Enum):
     SELECTING_SERVICE = auto()
-    ENTERING_AREA = auto()
+    ENTERING_LOCATION = auto()
 
 
 # Available services
@@ -58,6 +65,19 @@ def get_service_keyboard() -> InlineKeyboardMarkup:
         for service_id, name in SERVICES.items()
     ]
     return InlineKeyboardMarkup(keyboard)
+
+
+def get_location_keyboard() -> ReplyKeyboardMarkup:
+    """Create a keyboard with location sharing button."""
+    keyboard = [
+        [KeyboardButton("📍 Share My Location", request_location=True)],
+        [KeyboardButton("❌ Cancel")],
+    ]
+    return ReplyKeyboardMarkup(
+        keyboard,
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> States:
@@ -99,25 +119,43 @@ async def service_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     await query.edit_message_text(
         f"You selected: *{service_name}*\n\n"
-        "📍 Please enter your *area/location* so we can find nearby workers:",
+        "📍 Please share your location so we can find nearby workers.",
         parse_mode="Markdown",
     )
 
-    return States.ENTERING_AREA
+    # Send a new message with the location button
+    await query.message.reply_text(
+        "Tap the button below to share your location:\n\n"
+        "_Your location will only be used to find nearby service workers._",
+        parse_mode="Markdown",
+        reply_markup=get_location_keyboard(),
+    )
+
+    return States.ENTERING_LOCATION
 
 
-async def area_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle area/location input and confirm the request."""
+async def location_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle location sharing from user."""
     user = update.effective_user
-    area = update.message.text.strip()
+    location = update.message.location
     service_name = context.user_data.get("selected_service", "the requested service")
 
-    logger.info(f"User {user.id} requested {service_name} in area: {area}")
+    # Extract coordinates
+    latitude = location.latitude
+    longitude = location.longitude
+
+    logger.info(
+        f"User {user.id} requested {service_name} at location: "
+        f"({latitude}, {longitude})"
+    )
+
+    # Create Google Maps link for the location
+    maps_link = f"https://www.google.com/maps?q={latitude},{longitude}"
 
     confirmation_message = (
         "✅ *Request Confirmed!*\n\n"
         f"📋 *Service:* {service_name}\n"
-        f"📍 *Location:* {area}\n\n"
+        f"📍 *Location:* [{latitude:.6f}, {longitude:.6f}]({maps_link})\n\n"
         "🔔 Nearby workers have been notified and will contact you shortly.\n\n"
         "_Thank you for using Smart City Services!_\n\n"
         "Use /start to request another service."
@@ -126,6 +164,48 @@ async def area_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     await update.message.reply_text(
         confirmation_message,
         parse_mode="Markdown",
+        reply_markup=ReplyKeyboardRemove(),
+        disable_web_page_preview=True,
+    )
+
+    # Clear user data
+    context.user_data.clear()
+
+    return ConversationHandler.END
+
+
+async def text_location_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle manual text location input as fallback."""
+    user = update.effective_user
+    text = update.message.text.strip()
+
+    # Check if user clicked Cancel
+    if text == "❌ Cancel":
+        await update.message.reply_text(
+            "❌ Request cancelled.\n\nUse /start to begin again.",
+            parse_mode="Markdown",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    service_name = context.user_data.get("selected_service", "the requested service")
+
+    logger.info(f"User {user.id} requested {service_name} in area: {text}")
+
+    confirmation_message = (
+        "✅ *Request Confirmed!*\n\n"
+        f"📋 *Service:* {service_name}\n"
+        f"📍 *Location:* {text}\n\n"
+        "🔔 Nearby workers have been notified and will contact you shortly.\n\n"
+        "_Thank you for using Smart City Services!_\n\n"
+        "Use /start to request another service."
+    )
+
+    await update.message.reply_text(
+        confirmation_message,
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardRemove(),
     )
 
     # Clear user data
@@ -142,6 +222,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
         "❌ Request cancelled.\n\nUse /start to begin again.",
         parse_mode="Markdown",
+        reply_markup=ReplyKeyboardRemove(),
     )
 
     context.user_data.clear()
@@ -199,8 +280,9 @@ def main() -> None:
             States.SELECTING_SERVICE: [
                 CallbackQueryHandler(service_selected),
             ],
-            States.ENTERING_AREA: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, area_received),
+            States.ENTERING_LOCATION: [
+                MessageHandler(filters.LOCATION, location_received),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, text_location_received),
             ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
